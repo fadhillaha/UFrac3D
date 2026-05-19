@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Data, weights and outputs (placeholders are kept via .gitkeep)
+data/*
+!data/.gitkeep
+weights/*
+!weights/.gitkeep
+results/*
+!results/.gitkeep
+
+# Notebooks / OS cruft
+*.ipynb_checkpoints
+.DS_Store
