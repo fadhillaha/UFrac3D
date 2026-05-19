@@ -5,9 +5,7 @@ __pycache__/
 .venv/
 venv/
 
-# Data, weights and outputs (placeholders are kept via .gitkeep)
-data/*
-!data/.gitkeep
+# Data, weights and outputs 
 weights/*
 !weights/.gitkeep
 results/*

@@ -10,7 +10,7 @@ geometry + Euclidean Distance Transform) — and predicts the velocity field.
 ## Repository structure
 
 ```
-data/             Representative .mat fracture sub-volumes 
+data/             .mat fracture sub-volumes 
   dataset.py      FractureDataset, EDT computation, train/val split
   models.py       UNet3D and AttResUNet architectures
   train.py        Training: AdamW, weighted MAE, ReduceLROnPlateau, AMP, early stopping
