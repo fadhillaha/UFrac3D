@@ -23,9 +23,9 @@ from typing import List, Tuple
 
 import matplotlib
 
-matplotlib.use("Agg")  # headless: write files, no display
-import matplotlib.pyplot as plt  # noqa: E402
-import pandas as pd  # noqa: E402
+matplotlib.use("Agg")  
+import matplotlib.pyplot as plt  
+import pandas as pd  
 
 METRICS: List[str] = ["MAE", "RMSE", "RRMSE", "sMAPE"]
 

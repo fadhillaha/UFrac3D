@@ -1,0 +1,4 @@
+# Model Weights
+Because the model weights exceed GitHub's file size limit, they are hosted on Google Drive.
+
+https://drive.google.com/drive/folders/1iSwc26uw5nPrZSTQYsvxboREbLh6wwJ6?usp=sharing

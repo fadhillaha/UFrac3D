@@ -10,14 +10,17 @@ geometry + Euclidean Distance Transform) — and predicts the velocity field.
 ## Repository structure
 
 ```
-data/             .mat fracture sub-volumes 
-  dataset.py      FractureDataset, EDT computation, train/val split
+src/              
+  dataset.py      Dataset preparation, EDT computation, train/validation split
   models.py       UNet3D and AttResUNet architectures
   train.py        Training: AdamW, weighted MAE, ReduceLROnPlateau, AMP, early stopping
   evaluate.py     Per-sample RMSE / RRMSE / sMAPE / MAE, written to CSV
   permeability.py Permeability estimation vs. LBM reference values
   analysis.py     Summary tables and plots from evaluation CSVs
-weights/          Trained checkpoints
+data/             
+  input/          .mat files containing binary 3D fracture data
+  sim/            .csv files containing velocity field from fluid simulation
+  weight/         Saved model weight
 results/          Output CSVs, tables and plots
 requirements.txt
 README.md
@@ -41,7 +44,6 @@ pip install -r requirements.txt
 ## Usage
 
 Run each script from the `src/` directory (or add it to `PYTHONPATH`).
-Every script supports `--help`.
 
 Train:
 
@@ -49,8 +51,8 @@ Train:
 python src/train.py \
   --input-folder data/input --mask-folder data/sim \
   --model unet3d --in-channels 2 \
-  --save-path weights/unet3d_2in.pth \
-  --history-path results/unet3d_2in_history.csv
+  --save-path weights/unet3d_2input.pth \
+  --history-path results/unet3d_2input_history.csv
 ```
 
 Evaluate (writes a per-sample metrics CSV):
@@ -58,21 +60,20 @@ Evaluate (writes a per-sample metrics CSV):
 ```bash
 python src/evaluate.py \
   --input-folder data/input --mask-folder data/sim \
-  --checkpoint weights/unet3d_2in.pth \
+  --checkpoint weights/unet3d_2input.pth \
   --model unet3d --in-channels 2 --split val \
-  --output results/unet3d_2in_val.csv
+  --output results/unet3d_2input_val.csv
 ```
 
-Permeability (optionally compared against an LBM reference CSV):
+Permeability :
 
 ```bash
 python src/permeability.py \
   --input-folder data/input --mask-folder data/sim \
-  --checkpoint weights/unet3d_2in.pth \
+  --checkpoint weights/unet3d_2input.pth \
   --model unet3d --in-channels 2 \
   --delta-p 5e-4 \
-  --lbm-csv data/lbm_data.csv \
-  --output results/unet3d_2in_permeability.csv
+  --output results/unet3d_2input_permeability.csv
 ```
 
 Analysis (tables and plots from one or more evaluation CSVs):
