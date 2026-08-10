@@ -72,7 +72,7 @@ python src/permeability.py \
   --input-folder data/input --mask-folder data/sim \
   --checkpoint weights/unet3d_2input.pth \
   --model unet3d --in-channels 2 \
-  --delta-p 5e-4 \
+  --delta-p 5e-5 \
   --output results/unet3d_2input_permeability.csv
 ```
 
