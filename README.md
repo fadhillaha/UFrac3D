@@ -1,94 +1,60 @@
-# Fluid Flow Prediction using U-Nets in 3D Single Fractures (UFrac3D)
+# UFrac3D: 3-D Fluid Flow Velocity Prediction in Single Fractures
 
-This repository contains the code for a deep-learning study on predicting
-3D fluid-flow velocity fields inside singular rock fracture geometries. Two
-convolutional networks are provided: a 3D U-Net and an Attention
-Residual 3D U-Net. Each takes a 128×128×128 voxel fracture geometry as
-input — either one channel (binary geometry) or two channels (binary
-geometry + Euclidean Distance Transform) — and predicts the velocity field.
+This repository contains the official PyTorch implementation for the manuscript: **"Attention Residual U-Net for Three-Dimensional Fluid Flow Velocity Prediction in Single Fractures"** 
 
-## Repository structure
+The repository provides a deep learning surrogate framework designed to predict three-dimensional velocity vector fields inside rough single fractures. The models are trained on synthetic fractal Brownian motion (fBm) geometries and evaluated on both synthetic data and real rock specimens (andesite, granite, and shale).
 
-```
-src/              
-  dataset.py      Dataset preparation, EDT computation, train/validation split
-  models.py       UNet3D and AttResUNet architectures
-  train.py        Training: AdamW, weighted MAE, ReduceLROnPlateau, AMP, early stopping
-  evaluate.py     Per-sample RMSE / RRMSE / sMAPE / MAE, written to CSV
-  permeability.py Permeability estimation vs. LBM reference values
-  analysis.py     Summary tables and plots from evaluation CSVs
-data/             
-  input/          .mat files containing binary 3D fracture data
-  sim/            .csv files containing velocity field from fluid simulation
-  weight/         Saved model weight
-results/          Output CSVs, tables and plots
-requirements.txt
-README.md
-```
+## Available Architectures
 
-## Data layout
+The repository implements six model configurations evaluated in the study. These architectures can be trained to predict the full 3-D velocity vector field using either a single-channel input (binary fracture geometry) or a two-channel input (binary geometry augmented with its Euclidean Distance Transform).
 
-`build_dataframe` pairs files by base name: a `.mat` geometry file (variable
-`sub_volume` or `wadah`) in the input folder and a `.csv` velocity file with
-the same base name in the mask folder. Targets are square-rooted and scaled
-during training; evaluation reverses this and converts lattice units to
-m/s.
+1. **U-Net**: Baseline fully convolutional 3-D encoder-decoder.
+2. **AttResUNet**: Incorporates residual connections and attention gates.
+3. **AttResUNet-ASPP**: Incorporates an Atrous Spatial Pyramid Pooling module at the bottleneck to resolve multi-scale spatial features.
 
-## Install
+## Repository Structure
 
-```bash
-python -m venv .venv && source .venv/bin/activate
+- **training/**: Core machine learning framework.
+  - train.py: Main script for model training and validation.
+  - evaluate.py: Main script for inference and computation of voxel-wise error metrics (RMSE, SMAPE, Average Angular Error).
+  - models.py: PyTorch network definitions for all evaluated architectures.
+  - dataset.py: Data loaders, transformations, and input processing pipelines.
+- **processing/**: Physics integration, domain analysis, and post-processing tools.
+  - permeability.py: Pipeline for calculating macroscopic permeability from predicted flow fields via Darcy's law.
+  - physics_baselines.py: Computes analytical physics baselines (standard and local cubic laws).
+  - domain_gap.py: Computes Kolmogorov-Smirnov (KS) statistics and Wasserstein distances to quantify structural domain gaps.
+  - analysis.py: Aggregates error metrics for generating statistical tables and distributions.
+- **data/**: Directory for sample fracture geometries (.mat) and LBM ground truth velocity fields.
+- **weights/**: Directory for pre-trained model checkpoints (.pth).
+
+## Installation
+
+Clone the repository and install the required dependencies:
+
+`bash
+git clone https://github.com/fadhillaha/UFrac3D.git
+cd UFrac3D
 pip install -r requirements.txt
-```
+`
 
-## Usage
+## Data and Pre-trained Models Accessibility
 
-Run each script from the `src/` directory (or add it to `PYTHONPATH`).
+* **Datasets**: Put the geometry arrays and corresponding LBM velocity fields and place them within the data/ directory.
+* **Model Weights**: Download the pre-trained checkpoints and place them within the weights/ directory.
 
-Train:
+## Usage Instructions
 
-```bash
-python src/train.py \
-  --input-folder data/input --mask-folder data/sim \
-  --model unet3d --in-channels 2 \
-  --save-path weights/unet3d_2input.pth \
-  --history-path results/unet3d_2input_history.csv
-```
+### 1. Model Training
+To train the AttResUNet-ASPP model utilizing the two-input configuration (geometry and EDT) to predict the 3-D velocity vector:
+`bash
+cd training
+python train.py --input-folder ../data/geometries --mask-folder ../data/velocities --model attresunet_aspp --in-channels 2 --target-mode vector
+`
 
-Evaluate (writes a per-sample metrics CSV):
-
-```bash
-python src/evaluate.py \
-  --input-folder data/input --mask-folder data/sim \
-  --checkpoint weights/unet3d_2input.pth \
-  --model unet3d --in-channels 2 --split val \
-  --output results/unet3d_2input_val.csv
-```
-
-Permeability :
-
-```bash
-python src/permeability.py \
-  --input-folder data/input --mask-folder data/sim \
-  --checkpoint weights/unet3d_2input.pth \
-  --model unet3d --in-channels 2 \
-  --delta-p 5e-5 \
-  --output results/unet3d_2input_permeability.csv
-```
-
-Analysis (tables and plots from one or more evaluation CSVs):
-
-```bash
-python src/analysis.py results/*.csv --out-dir results
-```
-
-`--model` accepts `unet3d` or `attresunet`. `--in-channels` is `1`
-(geometry only) or `2` (geometry + EDT).
-
-## Notes
-
-The train/validation split is fixed (`random_state=42`, stratified by
-volume size) for reproducibility. Training uses a batch size of 1 because
-whole 128³ volumes are processed. Mixed precision is enabled only on CUDA.
-
+### 2. Inference and Evaluation
+To evaluate a trained model and output voxel-wise statistical metrics:
+`bash
+cd training
+python evaluate.py --model-weights ../weights/aspp2.pth --input-folder ../data/geometries --mask-folder ../data/velocities --model attresunet_aspp --in-channels 2 --target-mode vector
+`
 

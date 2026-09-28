@@ -1,19 +1,10 @@
-"""3D U-Net architectures for fracture flow-field prediction.
-
-Provides two models:
-
-* :class:`UNet3D` -- a plain 3D U-Net (no residual connections, no attention).
-* :class:`AttResUNet` -- a 3D U-Net with residual convolution blocks and
-  attention gates on the skip connections.
-
-Both take an input of shape ``(N, in_channels, D, H, W)`` and produce an
-output of shape ``(N, out_channels, D, H, W)``.
-"""
+"""PyTorch implementations of the 3D U-Net, AttResUNet, and AttResUNet-ASPP architectures."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
 # Plain 3D U-Net
@@ -72,13 +63,15 @@ class UNet3D(nn.Module):
 
     Args:
         in_channels: Number of input channels (1 = geometry, 2 = geometry+EDT).
-        out_channels: Number of output channels (1 for the velocity field).
+        out_channels: Number of output channels. ``3`` for the vector
+            velocity field ``(u_x, u_y, u_z)`` (default: 3);
+            ``1`` reproduces the original magnitude-only model.
         dropout_rate: Dropout probability applied at the bottleneck during
             training.
     """
 
     def __init__(
-        self, in_channels: int = 1, out_channels: int = 1, dropout_rate: float = 0.2
+        self, in_channels: int = 1, out_channels: int = 3, dropout_rate: float = 0.2
     ) -> None:
         super().__init__()
         self.enc1 = SimpleEncoderBlock(in_channels, 32)
@@ -246,12 +239,14 @@ class AttResUNet(nn.Module):
 
     Args:
         in_channels: Number of input channels (1 = geometry, 2 = geometry+EDT).
-        out_channels: Number of output channels (1 for the velocity field).
+        out_channels: Number of output channels. ``3`` for the vector
+            velocity field ``(u_x, u_y, u_z)`` (default: 3);
+            ``1`` reproduces the original magnitude-only model.
         dropout_rate: Dropout probability applied at the bottleneck.
     """
 
     def __init__(
-        self, in_channels: int = 1, out_channels: int = 1, dropout_rate: float = 0.2
+        self, in_channels: int = 1, out_channels: int = 3, dropout_rate: float = 0.2
     ) -> None:
         super().__init__()
         self.enc1 = EncoderBlock(in_channels, 32)
@@ -285,9 +280,163 @@ class AttResUNet(nn.Module):
 
         return self.final_conv(d4)
 
+# ---------------------------------------------------------------------------
+# Attention Residual 3D U-Net + ASPP bottleneck
+# ---------------------------------------------------------------------------
+
+
+class ASPPBranch3D(nn.Module):
+    """One branch of the ASPP module: a (possibly dilated) conv -> GN -> GELU."""
+
+    def __init__(
+        self, in_channels: int, out_channels: int, dilation: int = 1,
+        kernel_size: int = 3, num_groups: int = 8,
+    ) -> None:
+        super().__init__()
+        padding = dilation if kernel_size == 3 else 0
+        self.conv = nn.Conv3d(
+            in_channels, out_channels, kernel_size=kernel_size,
+            padding=padding, dilation=dilation, bias=False,
+        )
+        self.gn = nn.GroupNorm(num_groups=min(num_groups, out_channels), num_channels=out_channels)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(self.gn(self.conv(x)))
+
+
+class ASPP3D(nn.Module):
+    """3D Atrous (dilated) Spatial Pyramid Pooling.
+
+    Parallel branches -- a 1x1x1 conv, several dilated 3x3x3 convs at
+    different rates, and a global-average-pooling branch -- run over the
+    same feature map and are concatenated, then projected back down with a
+    final 1x1x1 conv. This grows the receptive field (multi-scale context)
+    without any extra downsampling, so it doesn't cost spatial resolution
+    the way another pooling stage would.
+
+    Default ``dilations=(1, 2, 3)`` are deliberately modest: at the
+    bottleneck of a 4x-downsampled 128^3 volume the feature map is only
+    8x8x8, so DeepLab's classic 2-D rates (6, 12, 18) would mostly sample
+    zero-padding. If you apply this at a *higher-resolution* stage
+    (e.g. the first decoder level, 16^3), larger rates like ``(2, 4, 8)``
+    make more sense -- rule of thumb: keep the largest dilation well under
+    the feature map's edge length.
+
+    Args:
+        in_channels: Input channels.
+        out_channels: Output channels (also each branch's internal width).
+        dilations: Dilation rates for the atrous branches.
+        num_groups: Groups for GroupNorm.
+        dropout_rate: Dropout applied to the projected output.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dilations: "tuple[int, ...]" = (1, 2, 3),
+        num_groups: int = 8,
+        dropout_rate: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.branch_1x1 = ASPPBranch3D(in_channels, out_channels, dilation=1,
+                                        kernel_size=1, num_groups=num_groups)
+        self.atrous_branches = nn.ModuleList([
+            ASPPBranch3D(in_channels, out_channels, dilation=d, kernel_size=3,
+                         num_groups=num_groups)
+            for d in dilations
+        ])
+        self.global_conv = nn.Conv3d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.global_gn = nn.GroupNorm(num_groups=min(num_groups, out_channels), num_channels=out_channels)
+        self.global_act = nn.GELU()
+
+        n_branches = 2 + len(dilations)  # 1x1 + atrous branches + global
+        self.project = nn.Sequential(
+            nn.Conv3d(out_channels * n_branches, out_channels, kernel_size=1, bias=False),
+            nn.GroupNorm(num_groups=num_groups, num_channels=out_channels),
+            nn.GELU(),
+        )
+        self.dropout = nn.Dropout3d(p=dropout_rate)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        feats = [self.branch_1x1(x)]
+        for branch in self.atrous_branches:
+            feats.append(branch(x))
+
+        g = F.adaptive_avg_pool3d(x, 1)
+        g = self.global_act(self.global_gn(self.global_conv(g)))
+        g = F.interpolate(g, size=x.shape[2:], mode="trilinear", align_corners=False)
+        feats.append(g)
+
+        out = torch.cat(feats, dim=1)
+        out = self.project(out)
+        return self.dropout(out)
+
+
+class AttResUNetASPP(nn.Module):
+    """:class:`AttResUNet` with an ASPP block inserted at the bottleneck.
+
+    Identical to :class:`AttResUNet` everywhere else (same encoder,
+    attention-gated residual decoder, same channel widths) -- the only
+    change is that the bottleneck's plain residual conv block is followed
+    by :class:`ASPP3D` before the decoder, giving the network multi-scale
+    context (near-wall detail *and* long-range channel connectivity) at
+    the point in the network where doing so is cheapest (smallest spatial
+    resolution).
+
+    Args:
+        in_channels: Number of input channels (1 = geometry, 2 = geometry+EDT).
+        out_channels: Number of output channels (3 for the vector field).
+        dropout_rate: Dropout probability applied after the ASPP block.
+        aspp_dilations: Dilation rates for the ASPP branches -- see
+            :class:`ASPP3D`'s docstring for how to choose these.
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 1,
+        out_channels: int = 3,
+        dropout_rate: float = 0.2,
+        aspp_dilations: "tuple[int, ...]" = (1, 2, 3),
+    ) -> None:
+        super().__init__()
+        self.enc1 = EncoderBlock(in_channels, 32)
+        self.enc2 = EncoderBlock(32, 64)
+        self.enc3 = EncoderBlock(64, 128)
+        self.enc4 = EncoderBlock(128, 256)
+
+        self.bottleneck_conv = ConvBlock(256, 256)
+        self.aspp = ASPP3D(256, 256, dilations=aspp_dilations)
+        self.dropout = nn.Dropout3d(p=dropout_rate)
+
+        self.dec1 = DecoderBlock(256, 256, 256)
+        self.dec2 = DecoderBlock(256, 128, 128)
+        self.dec3 = DecoderBlock(128, 64, 64)
+        self.dec4 = DecoderBlock(64, 32, 32)
+
+        self.final_conv = nn.Conv3d(32, out_channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        s1, p1 = self.enc1(x)
+        s2, p2 = self.enc2(p1)
+        s3, p3 = self.enc3(p2)
+        s4, p4 = self.enc4(p3)
+
+        b = self.bottleneck_conv(p4)
+        b = self.aspp(b)
+        b = self.dropout(b)
+
+        d1 = self.dec1(b, s4)
+        d2 = self.dec2(d1, s3)
+        d3 = self.dec3(d2, s2)
+        d4 = self.dec4(d3, s1)
+
+        return self.final_conv(d4)
+
 
 # Registry so scripts can select an architecture by name.
-MODELS = {"unet3d": UNet3D, "attresunet": AttResUNet}
+MODELS = {"unet3d": UNet3D, "attresunet": AttResUNet, "attresunet_aspp": AttResUNetASPP}
 
 
 if __name__ == "__main__":
@@ -296,8 +445,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Print a model parameter count.")
     parser.add_argument("--model", choices=tuple(MODELS), default="unet3d")
     parser.add_argument("--in-channels", type=int, default=2)
+    parser.add_argument("--out-channels", type=int, default=3)
     args = parser.parse_args()
 
-    net = MODELS[args.model](in_channels=args.in_channels, out_channels=1)
+    net = MODELS[args.model](in_channels=args.in_channels, out_channels=args.out_channels)
     n_params = sum(p.numel() for p in net.parameters())
-    print(f"{args.model}: {n_params:,} parameters (in_channels={args.in_channels})")
+    print(f"{args.model}: {n_params:,} parameters "
+          f"(in_channels={args.in_channels}, out_channels={args.out_channels})")
